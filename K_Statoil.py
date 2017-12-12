@@ -22,17 +22,18 @@ ships = train[train.is_iceberg == 0].sample(n=4, random_state=38)
 df = pd.concat([icebergs, ships])
 
 # Defining anything under mean+std as noise and reduce it the minimum value
-for idx in df.index:
-    img = pd.Series(df.band_1[idx])
+
+def clean_img (img):
+    img = np.array(img)
     mn, mx = img.min(), img.max()
     img = (img - mn) / (mx - mn)
     img[img < (img.mean()+img.std())] = 0
-    df.band_1.ix[idx] = img.values.tolist()
-    img = pd.Series(df.band_2[idx])
-    mn, mx = img.min(), img.max()
-    img = (img - mn) / (mx - mn)
-    img[img < (img.mean()+img.std())] = 0
-    df.band_2.ix[idx] = img.values.tolist()
+    return img.tolist()
+
+df['band_1'] = df['band_1'].apply(clean_img)
+df['band_2'] = df['band_2'].apply(clean_img)
+
+
 
 # expanding the image from a list of pixels to individual columns
 df[list(range(5625))] = pd.DataFrame(df.band_1.values.tolist(), index=df.index)
@@ -63,7 +64,7 @@ num_classes = 1
 epochs = 3
 
 model = Sequential()
-model.add(Conv2D(32, kernel_size=(3, 3), activation='relu', input_shape=input_shape))
+model.add(Conv2D(32, kernel_size=(3, 3), activation='relu', input_shape=(,11251)))
 model.add(Conv2D(64, (3, 3), activation='relu'))
 model.add(MaxPooling2D(pool_size=(2, 2)))
 model.add(Dropout(0.25))

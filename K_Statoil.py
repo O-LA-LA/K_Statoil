@@ -52,7 +52,7 @@ def getModel():
     # Output
     model.add(Dense(1, activation="sigmoid"))
 
-    optimizer = Adam(lr= 0.001, decay=0.0)
+    optimizer = Adam(lr= 0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0.0)
  #   optimizer = keras.optimizers.SGD(lr=0.01, momentum=0.01, decay=0.0, nesterov=True)
     model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
 
@@ -61,6 +61,13 @@ def getModel():
 
 train = pd.read_json('/Users/ohad/Google_Drive/DS_projects/K_Statoil/Train/train.json')
 train['inc_angle'] = pd.to_numeric(train['inc_angle'], errors='coerce')
+
+# option1 fill the images with nan for inc_angle with mean of angles
+train['inc_angle'] = train['inc_angle'].fillna(train['inc_angle'].mean())
+
+# option2 drop images with nan
+# train = train.dropna(axis=0, how='any')
+
 print('train has been read')
 
 """bnd1 = np.array(train.band_1[0]).reshape(75,75)
@@ -85,60 +92,118 @@ df = pd.concat([icebergs, ships])"""
 
 # Defining anything under mean+std as noise and reduce it the minimum value
 
-def clean_bnd1 (img):
+def clean_img (img):
     img = np.array(img)
     mn, mx = img.min(), img.max()
     img = (img - mn) / (mx - mn)
-    img[img < (img.mean()+img.std()*0.8)] = 0
+    img[img < (img.mean()+img.std()*1)] = 0
+    return img.reshape((75, 75))
 
-    while
-    return img.tolist()
+def clean_from_img (img1, img2):
+    img2 = np.array(img2)
+    img2[img1.reshape(75*75) == 0] = 0
+    return img2.reshape(75, 75)
 
-train['band_1'] = train['band_1'].apply(clean_img)
-train['band_2'] = train['band_2'].apply(clean_img)
+def rotndup_img (img):
+    img90 = np.array(list(zip(*img[::-1])))
+    img180 = np.array(list(zip(*img90[::-1])))
+    img270 = np.array(list(zip(*img180[::-1])))
+    return [img, img90, img180, img270]
+
+def deep_clean (bnd1, bnd2):
+    bnd1 = np.array(bnd1)
+    mn, mx = bnd1.min(), bnd1.max()
+    bnd1 = (bnd1 - mn) / (mx - mn)
+    bnd1[bnd1 < (bnd1.mean()+bnd1.std()*1)] = 0
 
 
 
-# adding the cleaned images to increase gradient of shapes and to reduce the amount of data to process and reshape to 75, 75
-"""for idx in df.index:
-    df.at[idx, 'enh_img'] = (np.array(df.loc[idx, 'band_1']) + np.array(df.loc[idx,'band_2'])).reshape(75,75)
 
-df1 = pd.DataFrame([(np.array(df.at[idx, 'band_1']) + np.array(df.at[idx,'band_2'])).reshape(75,75) for idx in df.index], index=df.index)
-for idx in df.index:
-    df1[idx] = (np.array(df.at[idx, 'band_1']) + np.array(df.at[idx,'band_2'])).reshape(75,75)"""
-
-#arr = np.array([np.array(df.at[idx,'band_2']).reshape(75, 75).tolist() + np.array(df.at[idx,'band_1']).reshape(75, 75).tolist() for idx in df.index])
-#arr = np.array([np.array((df.at[idx,'band_2']) + np.array(df.at[idx,'band_1'])).reshape(75, 75) for idx in df.index])
+#bnd1_ly = train['band_1'].apply(clean_img)
+#bnd2_ly = train['band_2'].apply(clean_img)
 
 # input image dimensions
-img_rows, img_cols = 75, 75
+img_rows, img_cols, layers = 75, 75, 2
 
 
 # Creating more test cases
 print('creating more test cases')
 
+enh_ly = []
+bnd1_ly = []
+bnd2_ly = []
+inc_ang_ly = []
+inc_ang = np.zeros((75, 75))
 X = []
 y = []
 for i in train.index:
     print(i)
-    img = np.array(np.array(train.at[i, 'band_2']) + np.array(train.at[i, 'band_1'])).reshape(75, 75)
-    img90 = np.array(list(zip(*img[::-1])))
-    img180 = np.array(list(zip(*img90[::-1])))
-    img270 = np.array(list(zip(*img180[::-1])))
-    X.extend([img, img90, img180, img270])
-    ice = train.loc[i, 'is_iceberg']
-    y.extend([ice, ice, ice, ice])
 
-#    inc_angle = train.loc[i, 'inc_angle']
+    # cleaned layer band_1 HH (cHH)
+    bnd1 = clean_img(train.at[i, 'band_1'])
+    bnd1_ly.extend(rotndup_img(bnd1))
+
+    # cleaned layer band_2 HV (in the future will cleaned based on the zero of HH) - cHV
+    bnd2 = clean_img(train.at[i, 'band_2'])
+    bnd2_ly.extend((rotndup_img(bnd2)))
+
+    # Enhanced layer of cHH + cHV
+    enh_img = bnd1 + bnd2
+    enh_ly.extend(rotndup_img(enh_img))
+
+    # layer containing the angle
+    inc_ang[bnd1 != 0] = train.at[i, 'inc_angle']/2000
+    inc_ang[bnd1 == 0] = 0
+    inc_ang_ly.extend([inc_ang, inc_ang, inc_ang, inc_ang])
+
+    # matching the target data
+    ice = train.loc[i, 'is_iceberg']
+
+    """
+    # All 4 layers bnd1, bnd2, enh and angle
+    X.append(np.dstack((bnd1_ly[0], bnd2_ly[0], enh_ly[0], inc_ang_ly[0])))
+    X.append(np.dstack((bnd1_ly[1], bnd2_ly[1], enh_ly[1], inc_ang_ly[1])))
+    X.append(np.dstack((bnd1_ly[2], bnd2_ly[2], enh_ly[2], inc_ang_ly[2])))
+    X.append(np.dstack((bnd1_ly[3], bnd2_ly[3], enh_ly[3], inc_ang_ly[3])))
+
+    y.extend([ice, ice, ice, ice])
+    """
+    """
+    # layer NOT containing the angle
+    X.append(np.dstack((bnd1_ly[0], bnd2_ly[0], enh_ly[0])))
+    X.append(np.dstack((bnd1_ly[1], bnd2_ly[1], enh_ly[1])))
+    X.append(np.dstack((bnd1_ly[2], bnd2_ly[2], enh_ly[2])))
+    X.append(np.dstack((bnd1_ly[3], bnd2_ly[3], enh_ly[3])))
+    
+    y.extend([ice, ice, ice, ice])
+    
+    """
+    """
+    # layer bnd1, bnd2, angle
+    X.append(np.dstack((bnd1_ly[0], bnd2_ly[0], inc_ang_ly[0])))
+    X.append(np.dstack((bnd1_ly[1], bnd2_ly[1], inc_ang_ly[1])))
+    X.append(np.dstack((bnd1_ly[2], bnd2_ly[2], inc_ang_ly[2])))
+    X.append(np.dstack((bnd1_ly[3], bnd2_ly[3], inc_ang_ly[3])))
+
+    y.extend([ice, ice, ice, ice])
+    """
+    # layer containing ONLY enh + angle with no duplication of the data
+    X.append(np.dstack((enh_img, inc_ang)))
+
+    y.extend([ice])
+
+
+
 """
 what I want to do here is create 5 layers:
-    1. layer containing the angle
-    2. cleaned layer HH - cHH
-    3. cleaned layer HV (based on the zero of HH) - cHV
-    4. enhanced layer (cHH + cHV)
-    5. img from 4 zoomed, sharpened 
+    1. Cleaned layer band_1
+    2. Cleaned layer band_2
+    3. Enhanced using band_1 + band_2
+    4. layer using the angle
+    5. to be tested - img from 4 zoomed, sharpened 
+"""
 
-
+"""
 import scipy
 from scipy import ndimage
 
@@ -191,24 +256,22 @@ plt.title('sharp')
 plt.tight_layout()
 plt.show()
 """
-#    img90 = np.array([np.array(list(zip(*img[::-1]))), np.array([[train.loc[i, 'inc_angle']]*75]*75)])
-
 
 X = np.array(X)
 y = np.array(y)
 
 # split train and validate data
-x_train, x_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
+x_train, x_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
 # configuring the input_shape and the x, y to the tensor flow structure
 if K.image_data_format() == 'channels_first':
-    x_train = x_train.reshape(x_train.shape[0], 1, img_rows, img_cols)
-    x_test = x_test.reshape(x_test.shape[0], 1, img_rows, img_cols)
-    input_shape = (1, img_rows, img_cols)
+    x_train = x_train.reshape(x_train.shape[0], layers, img_rows, img_cols)
+    x_test = x_test.reshape(x_test.shape[0], layers, img_rows, img_cols)
+    input_shape = (layers, img_rows, img_cols)
 else:
-    x_train = x_train.reshape(x_train.shape[0], img_rows, img_cols, 1)
-    x_test = x_test.reshape(x_test.shape[0], img_rows, img_cols, 1)
-    input_shape = (img_rows, img_cols, 1)
+    x_train = x_train.reshape(x_train.shape[0], img_rows, img_cols, layers)
+    x_test = x_test.reshape(x_test.shape[0], img_rows, img_cols, layers)
+    input_shape = (img_rows, img_cols, layers)
 
 
 # change train to float32 for better performance
@@ -220,8 +283,8 @@ print(x_train.shape[0], 'train samples')
 print(x_test.shape[0], 'test samples')
 
 # Setup model parameters
-batch_size = 100
-epochs = 15
+batch_size = 200
+epochs = 50
 earlyStopping = EarlyStopping(monitor='val_loss', patience=10, verbose=0, mode='min')
 mcp_save = ModelCheckpoint('.mdl_wts.hdf5', save_best_only=True, monitor='val_loss', mode='min')
 reduce_lr_loss = ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=7, verbose=1, epsilon=1e-4, mode='min')

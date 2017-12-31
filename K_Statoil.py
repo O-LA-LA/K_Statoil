@@ -121,7 +121,7 @@ def getModel():
     # Output
     model.add(Dense(1, activation="sigmoid"))
 
-    optimizer = Adam(lr= 0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0.0)
+    optimizer = Adam(lr= 0.0011, beta_1=0.99, beta_2=0.999, epsilon=1e-08, decay=0.0)
     #optimizer = Adam(lr=0.001, decay=0.0)
     #optimizer = keras.optimizers.SGD(lr=0.03, momentum=0.03, decay=0.01, nesterov=True)
     model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
@@ -134,12 +134,13 @@ train['inc_angle'] = pd.to_numeric(train['inc_angle'], errors='coerce')
 
 # option1 fill the images with nan for inc_angle with mean of angles
 #train['inc_angle'] = train['inc_angle'].fillna(train['inc_angle'].mean())
+#test['inc_angle'] = test['inc_angle'].fillna(test['inc_angle'].mean())
 
 # option2 drop images with nan
 train = train.dropna(axis=0, how='any')
 
-print('train has been read')
 
+print('train has been read')
 
 # split icebergs from ships
 # Index([995, 118, 135, 138]
@@ -155,9 +156,7 @@ df = pd.concat([icebergs, ships])"""
 img_rows, img_cols, layers = 75, 75, 4
 
 
-# Creating more test cases
-print('creating more test cases')
-
+# train var setup
 avg = 0
 avg_inc = train.inc_angle.mean()
 max_inc = train.inc_angle.max()
@@ -172,6 +171,7 @@ inc_ang_ly = []
 inc_ang = np.zeros((75, 75))
 X = []
 y = []
+
 for i in train.index:
     print(i)
 
@@ -183,20 +183,21 @@ for i in train.index:
     bnd2 = clean_img(train.at[i, 'band_2'])
     bnd2_ly.extend((rotndup_img(bnd2)))"""
 
-    # raw images
+    # train raw images
     rw1 = normalize(train.at[i, 'band_1'])
     rw2 = normalize(train.at[i, 'band_2'])
 
-    # cleaned layer band_1 HH (cHH)
+    # train cleaned layer band_1 HH (cHH)
     bnd1 = deep_clean(train.at[i, 'band_1'])
 
-    # cleaned layer band_2 HV (in the future will cleaned based on the zero of HH) - cHV
+    # train cleaned layer band_2 HV (in the future will cleaned based on the zero of HH) - cHV
     bnd2 = np.array(train.at[i, 'band_2']).reshape(75, 75)
     bnd2[bnd1 == 0] = 0
 
-    # Enhanced layer of cHH + cHV
+    # train Enhanced layer of cHH + cHV
     enh_img = bnd1 + bnd2
     avg = avg + np.mean(enh_img, axis = (0, 1))
+
 
     # increasing sample data by rotating images
     #rw1_ly.extend(rotndup_img(rw1))
@@ -396,221 +397,66 @@ model.fit(x_train, y_train,
 model.load_weights(filepath = '.mdl_wts.hdf5')
 
 score = model.evaluate(x_test, y_test, verbose=1)
+print('Test val loss:', score[0])
+print('Test val accuracy:', score[1])
+
+"""
+####  getting the data ready for submission  #####
+test = pd.read_json('/Users/ohad/Google_Drive/DS_projects/K_Statoil/test/test.json')
+test['inc_angle'] = pd.to_numeric(test['inc_angle'], errors='coerce')
+
+# option2 drop images with nan
+test = test.dropna(axis=0, how='any')
+print('test has been read')
+
+
+# test var setup
+
+tst_avg_inc = test.inc_angle.mean()
+tst_max_inc = test.inc_angle.max()
+tst_min_inc = test.inc_angle.min()
+tst_rw1_ly = []
+tst_rw2_ly = []
+tst_rrw_ly = []
+tst_enh_ly = []
+# tst_bnd1_ly = []
+# tst_bnd2_ly = []
+# tst_inc_ang_ly = []
+tst_inc_ang = np.zeros((75, 75))
+tst_X = []
+tst_y = []
+
+
+for i in test.index:
+    print(i)
+
+    # test raw images
+    tst_rw1 = normalize(test.at[i, 'band_1'])
+    tst_rw2 = normalize(test.at[i, 'band_2'])
+
+    # test cleaned layer band_1 HH (cHH)
+    tst_bnd1 = deep_clean(test.at[i, 'band_1'])
+
+    # test cleaned layer band_2 HV (in the future will cleaned based on the zero of HH) - cHV
+    tst_bnd2 = np.array(test.at[i, 'band_2']).reshape(75, 75)
+    tst_bnd2[tst_bnd1 == 0] = 0
+
+    # train Enhanced layer of cHH + cHV
+    tst_enh_img = tst_bnd1 + tst_bnd2
+
+    # test creating a layer from the angle
+    tst_inc_ang[:] = ((test.at[i, 'inc_angle'] - avg_inc - min_inc) / (max_inc - min_inc))
+
+    # layer containing enh and normalized raw with NO duplication of the data
+    tst_X.append(np.dstack((tst_rw1 + tst_rw2, tst_enh_img, tst_rw1, tst_inc_ang)))
+
+    ice = test.loc[i, 'is_iceberg']
+
+    tst_y.extend([ice])
+
+score = model.evaluate(tst_X, tst_y, verbose=1)
 print('Test loss:', score[0])
 print('Test accuracy:', score[1])
 
 
-
-
-# Draft:
 """
-import numpy as np
-import matplotlib.pyplot as plt
-
-rnd_hist = [685]
-
-rnd = np.random.randint(len(train))
-
-########################
-
-
-bd1 = train.band_1[rnd]
-bd2 = np.array(train.band_2[rnd]).reshape(75, 75)
-bd1 = np.array(bd1)
-
-plt.subplot(231)
-plt.title('Band_1 Raw')
-raw = bd1.reshape(75, 75)
-plt.imshow(raw)
-mn, mx = bd1.min(), bd1.max()
-bd1 = (bd1 - mn) / (mx - mn)
-bd1[bd1 < (bd1.mean() + bd1.std() * 1)] = 0
-
-part_of = np.zeros((75, 75))
-peaks = np.zeros((75, 75))
-chk = np.zeros((75, 75))
-bd1 = bd1.reshape(75, 75)
-
-# standard cleaning
-plt.subplot(235)
-plt.imshow(bd1)
-plt.title('std clean')
-
-top95 = np.percentile(bd1, 99.5)
-row, col = np.where(bd1 > top95)
-
-# defining the border of a cell
-lst = [[-1, 1], [0, 1], [1, 1], [-1, 0], [1, 0], [-1, -1], [0, -1], [-1, -1]]
-
-
-for i in range(len(row)):
-    x = row[i]
-    y = col[i]
-    print('{} out of {}'.format(i, len(row)))
-    cell2chk = [[x, y]]
-    j = 0
-    macktub = True
-    while macktub:
-        x, y = cell2chk[j]
-        part_of[x, y] = 1
-        for sx, sy in lst:
-            if bd1[x+sx, y+sy] != 0 and part_of[x+sx, y+sy] == 0:
-                part_of[x+sx, y+sy] = 1
-                cell2chk.append([x+sx, y+sy])
-            elif bd1[x+sx, y+sy] == 0:
-                part_of[x+sx, y+sy] = -1
-        j += 1
-        if j+1 >= len(cell2chk):
-            macktub = False
-
-
-plt.subplot(232)
-bd1[part_of == -1] = 0
-bd1[part_of == 0] = 0
-plt.imshow(bd1)
-plt.title('deep clean')
-
-plt.subplot(233)
-for peak in range(len(row)):
-    peaks[row[peak], col[peak]] = 20
-plt.imshow(peaks)
-plt.title('Peaks')
-
-plt.subplot(236)
-plt.imshow(part_of)
-plt.title('Part_of')
-
-
-#######################################
-
-bd1 = train.band_1[rnd]
-bd2 = np.array(train.band_2[rnd]).reshape(75, 75)
-bd1 = np.array(bd1)
-
-plt.subplot(231)
-plt.title('Band_1 Raw')
-raw = bd1.reshape(75, 75)
-plt.imshow(raw)
-mn, mx = bd1.min(), bd1.max()
-bd1 = (bd1 - mn) / (mx - mn)
-bd1[bd1 < (bd1.mean() + bd1.std() * 1)] = 0
-part_of = np.zeros((75, 75))
-where_i_have_been = np.zeros((75, 75))
-peaks = np.zeros((75, 75))
-bd1 = bd1.reshape(75, 75)
-
-plt.subplot(235)
-reg_cl = bd1
-plt.title('Reg_Clean')
-plt.imshow(reg_cl)
-
-plt.subplot(232)
-top95 = np.percentile(bd1, 99.5)
-row, col = np.where(bd1 > top95)
-for peak in range(len(row)):
-    chk_360(bd1, row[peak], col[peak])
-
-bd1[part_of == -1] = 0
-bd1[part_of == 0] = 0
-plt.imshow(bd1)
-plt.title('deep clean')
-
-plt.subplot(233)
-for peak in range(len(row)):
-    peaks[row[peak], col[peak]] = 20
-plt.imshow(peaks)
-plt.title('Peaks')
-
-plt.subplot(236)
-plt.imshow(part_of)
-plt.title('Part_of')
-
-plt.subplot(234)
-plt.imshow(where_i_have_been)
-plt.title('where_i_have_been')
-plt.show()
-
-print('func calls:', chk_calls)
-print('')
-
-from skimage.filters import sobel
-from skimage.morphology import watershed
-from scipy import ndimage as ndi
-
-markers = np.zeros_like(reg_cl)
-markers[reg_cl > 0.4] = 2
-markers[reg_cl < 0.3] = 1
-
-elevation_map = sobel(reg_cl)
-segmentation = watershed(elevation_map, markers)
-
-segmentation = ndi.binary_fill_holes(segmentation - 1)
-labeled_obj, _ = ndi.label(segmentation)
-"""
-
-
-"""
-rnd = 1021
-rnd = np.random.randint(0, len(train)-1)
-
-bd1 = train.at[rnd, 'band_1']
-raw = np.array(bd1).reshape(75, 75)
-
-
-bd1 = np.array(bd1)
-mn, mx = bd1.min(), bd1.max()
-bd1 = (bd1 - mn) / (mx - mn)
-bd1[bd1 < (bd1.mean() + bd1.std() * 1)] = 0
-clean = bd1.reshape(75, 75)
-bd1 = bd1.reshape(75, 75)
-
-# defining an array to hold "remember" our object pattern
-part_of = np.zeros((75, 75))
-
-# we are searching waterfall style only upside down, an so we extract the peaks and work our way down.
-top95 = np.percentile(bd1, 99.5)
-row, col = np.where(bd1 > top95)
-
-lst = [[-1, 1], [0, 1], [1, 1], [-1, 0], [1, 0], [-1, -1], [0, -1], [-1, -1]]
-
-for i in range(len(row)):
-    x = row[i]
-    y = col[i]
-    cell2chk = [[x, y]]
-    j = 0
-    macktub = True
-    while macktub:
-        x, y = cell2chk[j]
-        part_of[x, y] = 1
-        for sx, sy in lst:
-            if (x + sx) < 75 and (y + sy) < 75 and (x + sx) >= 0 and (y + sy) >= 0:
-                if bd1[x + sx, y + sy] != 0 and part_of[x + sx, y + sy] == 0:
-                    part_of[x + sx, y + sy] = 1
-                    cell2chk.append([x + sx, y + sy])
-                elif bd1[x + sx, y + sy] == 0:
-                    part_of[x + sx, y + sy] = -1
-        j += 1
-        if j + 1 >= len(cell2chk):
-            macktub = False
-
-bd1[part_of == 0] = 0
-
-plt.subplot(232)
-plt.title('ice: {}, angle: {}'.format(train.at[rnd, 'is_iceberg'], train.at[rnd, 'inc_angle'] ))
-
-
-plt.subplot(234)
-plt.imshow(raw)
-plt.title('Raw')
-
-plt.subplot(235)
-plt.imshow(clean)
-plt.title('Reg Clean')
-
-plt.subplot(236)
-plt.imshow(bd1)
-plt.title('Deep Clean')
-
-"""
-
-

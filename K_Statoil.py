@@ -12,6 +12,11 @@ from keras.layers.normalization import BatchNormalization
 from keras import backend as K
 from keras.optimizers import Adam
 
+def unison_shuffled_copies(a, b):
+    assert len(a) == len(b)
+    p = np.random.permutation(len(a))
+    return a[p], b[p]
+
 def clean_img (img):
     img = np.array(img)
     mn, mx = img.min(), img.max()
@@ -19,10 +24,11 @@ def clean_img (img):
     img[img < (img.mean()+img.std()*1)] = 0
     return img.reshape((75, 75))
 
-def clean_from_img (img1, img2):
-    img2 = np.array(img2)
-    img2[img1.reshape(75*75) == 0] = 0
-    return img2.reshape(75, 75)
+def normalize (img1):
+    img1 = np.array(img1)
+    mn, mx = img1.min(), img1.max()
+    img1 = (img1 - mn) / (mx - mn)
+    return img1.reshape(75, 75)
 
 def rotndup_img (img):
     img90 = np.array(list(zip(*img[::-1])))
@@ -79,18 +85,21 @@ def getModel():
     model = Sequential()
 
     # CNN 1
-    model.add(Conv2D(64, kernel_size=(3, 3), activation='relu', input_shape=input_shape))
+
+    model.add(Conv2D(256, kernel_size=(3, 3), input_shape=input_shape))
+    model.add(keras.layers.LeakyReLU(alpha=0.3))
+    model.add(Conv2D(64, kernel_size=(3, 3), activation='relu'))
     model.add(MaxPooling2D(pool_size=(3, 3), strides=(2, 2)))
     model.add(Dropout(0.2))
 
     # CNN 2
     model.add(Conv2D(128, kernel_size=(3, 3), activation='relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2), strides=(1, 1)))
+    model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
     model.add(Dropout(0.2))
 
     # CNN 3
     model.add(Conv2D(128, kernel_size=(3, 3), activation='relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2), strides=(1, 1)))
+    model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
     model.add(Dropout(0.2))
 
     # CNN 4
@@ -113,7 +122,8 @@ def getModel():
     model.add(Dense(1, activation="sigmoid"))
 
     optimizer = Adam(lr= 0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0.0)
- #   optimizer = keras.optimizers.SGD(lr=0.01, momentum=0.01, decay=0.0, nesterov=True)
+    #optimizer = Adam(lr=0.001, decay=0.0)
+    #optimizer = keras.optimizers.SGD(lr=0.03, momentum=0.03, decay=0.01, nesterov=True)
     model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
 
     return model
@@ -142,13 +152,19 @@ ships = train[train.is_iceberg == 0].sample(n=4, random_state=38)
 df = pd.concat([icebergs, ships])"""
 
 # input image dimensions
-img_rows, img_cols, layers = 75, 75, 1
+img_rows, img_cols, layers = 75, 75, 4
 
 
 # Creating more test cases
 print('creating more test cases')
 
 avg = 0
+avg_inc = train.inc_angle.mean()
+max_inc = train.inc_angle.max()
+min_inc = train.inc_angle.min()
+rw1_ly = []
+rw2_ly = []
+rrw_ly = []
 enh_ly = []
 bnd1_ly = []
 bnd2_ly = []
@@ -167,25 +183,35 @@ for i in train.index:
     bnd2 = clean_img(train.at[i, 'band_2'])
     bnd2_ly.extend((rotndup_img(bnd2)))"""
 
+    # raw images
+    rw1 = normalize(train.at[i, 'band_1'])
+    rw2 = normalize(train.at[i, 'band_2'])
+
     # cleaned layer band_1 HH (cHH)
     bnd1 = deep_clean(train.at[i, 'band_1'])
-    bnd2 = np.array(train.at[i, 'band_2']).reshape(75, 75)
-    bnd2[bnd1 == 0] = 0
-    bnd1_ly.extend(rotndup_img(bnd1))
 
     # cleaned layer band_2 HV (in the future will cleaned based on the zero of HH) - cHV
-    bnd2_ly.extend((rotndup_img(bnd2)))
-
+    bnd2 = np.array(train.at[i, 'band_2']).reshape(75, 75)
+    bnd2[bnd1 == 0] = 0
 
     # Enhanced layer of cHH + cHV
     enh_img = bnd1 + bnd2
     avg = avg + np.mean(enh_img, axis = (0, 1))
-    enh_ly.extend(rotndup_img(enh_img))
+
+    # increasing sample data by rotating images
+    #rw1_ly.extend(rotndup_img(rw1))
+    #rw2_ly.extend(rotndup_img(rw2))
+    #rrw_ly.extend(rotndup_img(rw1+rw2))
+    #bnd1_ly.extend(rotndup_img(bnd1))
+    #bnd2_ly.extend((rotndup_img(bnd2)))
+    #enh_ly.extend(rotndup_img(enh_img))
+
 
     # layer containing the angle
-    inc_ang[bnd1 != 0] = train.at[i, 'inc_angle']
-    inc_ang[bnd1 == 0] = 0
-    inc_ang_ly.extend([inc_ang, inc_ang, inc_ang, inc_ang])
+    #inc_ang[bnd1 != 0] = train.at[i, 'inc_angle']
+    #inc_ang[bnd1 == 0] = 0
+    inc_ang[:] = ((train.at[i, 'inc_angle'] - avg_inc - min_inc)/ (max_inc - min_inc))
+    #inc_ang_ly.extend([inc_ang, inc_ang, inc_ang, inc_ang])
 
     # matching the target data
     ice = train.loc[i, 'is_iceberg']
@@ -226,10 +252,27 @@ for i in train.index:
     y.extend([ice])
     """
 
+    """
     # layer containing ONLY enh with NO duplication of the data
     X.append(np.dstack(enh_img))
     
     y.extend([ice])
+    """
+
+    # layer containing enh and normalized raw with NO duplication of the data
+    X.append(np.dstack((rw1 + rw2, enh_img, rw1, inc_ang)))
+
+    y.extend([ice])
+
+    """
+    # layer containing enh and normalized raw with duplication of the data
+    X.append(np.dstack((rrw_ly[0], rw1_ly[0], enh_ly[0], inc_ang)))
+    X.append(np.dstack((rrw_ly[1], rw1_ly[1], enh_ly[1], inc_ang)))
+    X.append(np.dstack((rrw_ly[2], rw1_ly[2], enh_ly[2], inc_ang)))
+    X.append(np.dstack((rrw_ly[3], rw1_ly[3], enh_ly[3], inc_ang)))
+
+    y.extend([ice, ice, ice, ice])
+    """
 
     """
     # layer containing ONLY enh with duplication of the data
@@ -305,12 +348,13 @@ plt.show()
 
 X = np.array(X)
 avg = avg/len(X)
-X = X - avg
-random.shuffle(X)
+#X = X - avg
 y = np.array(y)
 
+X, y = unison_shuffled_copies(X, y)
+
 # split train and validate data
-x_train, x_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42)
+x_train, x_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
 # configuring the input_shape and the x, y to the tensor flow structure
 if K.image_data_format() == 'channels_first':

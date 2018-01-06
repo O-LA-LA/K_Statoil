@@ -1,23 +1,28 @@
+from tempfile import TemporaryFile
+from keras.layers import merge, Input
+from keras.models import Model
 import numpy as np
 import pandas as pd
-import random
 from scipy import ndimage
 from sklearn.model_selection import train_test_split
-import keras
-import matplotlib.pyplot as plt
-from keras.models import Sequential
 from keras.layers import Dense, Dropout, Flatten
-from keras.layers import Conv2D, MaxPooling2D
 from keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
-from keras.layers.normalization import BatchNormalization
 from keras import backend as K
 from keras.optimizers import Adam
 from vgg16 import VGG16
-from imagenet_utils import preprocess_input, decode_predictions
+from keras.applications import mobilenet, resnet50
+import os
+import imutils
 
 ############################################################
 ############### All Functions ##############################
 ############################################################
+
+def rotate_img (img, rotate):
+    ver_img = [img]
+    for angle in np.arange(0, 360, 360/(rotate-1)):
+        ver_img.extend([imutils.rotate(img, angle)])
+    return ver_img
 
 def unison_shuffled_copies(a, b):
     assert len(a) == len(b)
@@ -95,83 +100,43 @@ def deep_clean (bd1):
     bd1[part_of == 0] = 0
     return bd1
 
-def getModel():
-    # Build keras model
-
-    model = Sequential()
-
-    # CNN 1
-
-    model.add(Conv2D(128, kernel_size=(3, 3), activation='relu', input_shape=input_shape))
-    model.add(Conv2D(128, kernel_size=(5, 5), activation='relu'))
-    model.add(MaxPooling2D(pool_size=(3, 3), strides=(2, 2)))
-    model.add(Dropout(0.2))
-
-    # CNN 2
-    model.add(Conv2D(128, kernel_size=(3, 3), activation='relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
-    model.add(Dropout(0.2))
-
-    # CNN 3
-    model.add(Conv2D(64, kernel_size=(3, 3), activation='relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
-    model.add(Dropout(0.2))
-
-    # CNN 4
-    model.add(Conv2D(64, kernel_size=(3, 3), activation='relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
-    model.add(Dropout(0.25))
-
-    # You must flatten the data for the dense layers
-    model.add(Flatten())
-
-    # Dense 1
-    model.add(Dense(512, activation='relu'))
-    model.add(Dropout(0.2))
-
-    # Dense 2
-    model.add(Dense(256, activation='relu'))
-    model.add(Dropout(0.2))
-
-    # Output
-    model.add(Dense(1, activation="sigmoid"))
-
-    optimizer = Adam(lr= 0.002, beta_1=0.99, beta_2=0.999, epsilon=1e-08, decay=0.01)
-    #optimizer = Adam(lr=0.001, decay=0.0)
-    #optimizer = keras.optimizers.SGD(lr=0.03, momentum=0.03, decay=0.01, nesterov=True)
-    model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
-
-    return model
-
 def prep_data(df, order):
     #avg = 0
-    avg_inc = df.inc_angle.mean()
-    max_inc = df.inc_angle.max()
-    min_inc = df.inc_angle.min()
-    inc_ang = np.zeros((int(75*order), int(75*order)))
+    #avg_inc = df.inc_angle.mean()
+    #max_inc = df.inc_angle.max()
+    #min_inc = df.inc_angle.min()
+    #inc_ang = np.zeros((int(75*order), int(75*order)))
     X = []
     for i in df.index:
         print(i)
         # raw images
-        rw1 = enlarge(normalize(df.at[i, 'band_1']), order=order)
-        rw2 = enlarge(normalize(df.at[i, 'band_2']), order=order)
+        if order != 1:
+            rw1 = enlarge(normalize(df.at[i, 'band_1']), order=order)
+            rw2 = enlarge(normalize(df.at[i, 'band_2']), order=order)
+        else:
+            rw1 = normalize(df.at[i, 'band_1'])
+            rw2 = normalize(df.at[i, 'band_2'])
+
 
         # Cleaned layer band_1 HH (cHH)
         c_bnd1 = deep_clean(rw1)
 
         # Clean band_2 HV using cleaned band_1 - cHV
-        c_bnd2 = rw2
-        c_bnd2[c_bnd1 == 0] = 0
+        #c_bnd2 = rw2
+        #c_bnd2[c_bnd1 == 0] = 0
+
+        # Cleaned layer band_2 HV (cHV)
+        c_bnd2 = deep_clean(rw1)
 
         # Enhanced layer of cHH + cHV
-        enh_img = c_bnd1 + c_bnd2
+        #enh_img = c_bnd1 + c_bnd2
         #avg = avg + np.mean(enh_img, axis=(0, 1))
 
         # Incident angle as a normalized layer
-        inc_ang[:] = ((df.at[i, 'inc_angle'] - avg_inc - min_inc) / (max_inc - min_inc))
+        # inc_ang[:] = ((df.at[i, 'inc_angle'] - avg_inc - min_inc) / (max_inc - min_inc))
 
         # 5 layers containing enh and normalized raw with NO duplication of the data
-        X.append(np.dstack((rw1, c_bnd1, rw2, c_bnd2, inc_ang)))
+        X.append(np.dstack((rw1+rw2, c_bnd1, c_bnd2)))
 
     return np.array(X)
 
@@ -184,9 +149,10 @@ def dup_data(fet, tar, num = 4):
     for i in range(len(fet)):
         print('duplicated image #', i)
         # rotate images
-        X.extend(list(rotndup_img(fet[i], num=num)))
+        X.extend(list(rotate_img(fet[i], num=num)))
         y.extend([tar[i]] * num)
     return np.array(X), np.array(y)
+
 
 ############################################################
 ########### Import Training data ###########################
@@ -210,19 +176,31 @@ print('train has been read')
 ############################################################
 
 # Order to enlarge our images
-order = 1.2
+order = 1
+path = '/Users/ohad/Google_Drive/DS_projects/K_Statoil/K_Statoil/data'
 
 # input image dimensions
-img_rows, img_cols, layers = int(75 * order), int(75 * order), 5
+img_rows, img_cols, layers = int(75 * order), int(75 * order), 3
 
 X_tr = prep_data(train, order=order)
 y_tr = np.array(train['is_iceberg'])
 
+file_name = 'X_prep{}'.format(str(order).replace(".", ""))
+np.save(os.path.join(path, file_name), X_tr)
+file_name = 'y_prep{}'.format(str(order).replace(".", ""))
+np.save(os.path.join(path, file_name), y_tr)
+
 # duplicating the data by rotating 90 degree 4 times:
-X_tr, y_tr = dup_data(X_tr, y_tr, num=2)
+flip = 10
+X_dup, y_dup = dup_data(X_tr, y_tr, num=flip)
+file_name = 'X_dup{}_ord{}'.format(flip, str(order).replace(".", ""))
+np.save(os.path.join(path, file_name), X_dup)
+file_name = 'y_dup{}_ord{}'.format(flip, str(order).replace(".", ""))
+np.save(os.path.join(path, file_name), y_dup)
+
 
 # shuffel the arrays to evenly distribute the data
-X, y = unison_shuffled_copies(X_tr, y_tr)
+X, y = unison_shuffled_copies(X_dup, y_dup)
 
 # split train and validate data
 x_train, x_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
@@ -250,31 +228,68 @@ print(x_test.shape[0], 'test samples')
 ###########  model setup  ##################################
 ############################################################
 
-# Setup model parameters
-batch_size = 20
+# Custom_MobileNet
+#Training the classifier alone
+image_input = Input(shape= input_shape)
+
+mb_model = mobilenet.MobileNet(input_shape=input_shape,
+                               alpha=1.0,
+                               depth_multiplier=1,
+                               dropout=1e-3,
+                               include_top=True,
+                               weights=None,
+                               input_tensor=image_input,
+                               pooling='avg')
+
+
+
+
+last_layer = mb_model.get_layer('conv_preds').output
+
+x = Flatten(name='flatten')(last_layer)
+x = Dense(128, activation='relu', name='fc1')(x)
+out = Dense(1, activation='sigmoid', name='output')(x)
+
+
+cst_mb_model = Model(image_input, out)
+cst_mb_model.summary()
+"""model = VGG16(input_tensor=image_input, include_top=True, weights='imagenet')
+#model.summary()
+
+
+last_layer = model.get_layer('block5_pool').output
+
+x = Flatten(name='flatten')(last_layer)
+#x = Dense(64, activation='relu', name='fc1')(x)
+out = Dense(1, activation='sigmoid', name='output')(x)
+
+custom_vgg_model = Model(image_input, out)
+custom_vgg_model.summary()
+
+for layer in custom_vgg_model.layers[:-4]:
+    layer.trainable = False
+"""
+
+optimizer = Adam(lr= 0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0.01)
+cst_mb_model.compile(loss='binary_crossentropy',optimizer=optimizer,metrics=['accuracy'])
+
+
+batch_size = 100
 epochs = 50
 earlyStopping = EarlyStopping(monitor='val_loss', patience=13, verbose=0, mode='min')
 mcp_save = ModelCheckpoint('.mdl_wts.hdf5', save_best_only=True, monitor='val_loss', mode='min')
 reduce_lr_loss = ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=7, verbose=1, epsilon=1e-4, mode='min')
 
-model = getModel()
-model.summary()
+cst_mb_model.fit(x_train, y_train,
+                     batch_size=batch_size,
+                     epochs=epochs,
+                     verbose=1,
+                     callbacks=[earlyStopping, mcp_save, reduce_lr_loss],
+                     validation_data=(x_test, y_test))
 
-############################################################
-###########  run model   ###################################
-############################################################
+cst_mb_model.load_weights(filepath = '.mdl_wts.hdf5')
 
-
-model.fit(x_train, y_train,
-          batch_size=batch_size,
-          epochs=epochs,
-          verbose=1,
-          callbacks=[earlyStopping, mcp_save, reduce_lr_loss],
-          validation_data=(x_test, y_test))
-
-model.load_weights(filepath = '.mdl_wts.hdf5')
-
-score = model.evaluate(x_test, y_test, verbose=1)
+score = cst_mb_model.evaluate(x_test, y_test, verbose=1)
 print('Test val loss:', score[0])
 print('Test val accuracy:', score[1])
 
@@ -288,12 +303,12 @@ test = pd.read_json('/Users/ohad/Google_Drive/DS_projects/K_Statoil/test/test.js
 test['inc_angle'] = pd.to_numeric(test['inc_angle'], errors='coerce')
 
 # option2 drop images with nan
-test = test.dropna(axis=0, how='any')
+#test = test.dropna(axis=0, how='any')
 print('test has been read')
 
-X_tst = prep_data_nodup(test)
+X_tst = prep_data(test, order)
 
-pred_test = model.predict(X_tst)
+pred_test = cst_mb_model.predict(X_tst)
 
 submission = pd.DataFrame({'id': test["id"], 'is_iceberg': pred_test.reshape((pred_test.shape[0]))})
 
@@ -301,76 +316,3 @@ scr =str(score[0]).replace(".", "")[0:5]
 
 submission.to_csv('submission_scr_{}.csv'.format(scr), index=False)
 
-
-"""
-########################################################
-###### Draft # Draft # Draft # Draft# Draft# Draft #####
-########################################################
-
-import scipy
-from scipy import ndimage
-
-o_bnd1 = normalize(np.array(train['band_1'][0]).reshape(75, 75))
-n_bnd1 = np.zeros(shape=(150, 150), dtype=np.float32)
-o_bnd2 = normalize(np.array(train['band_2'][0]).reshape(75, 75))
-n_bnd2 = np.zeros(shape=(150, 150), dtype=np.float32)
-
-
-for col in range(150):
-    for row in range(150):
-        n_bnd1[col, row] = o_bnd1[int(col/2), int(row/2)]
-        n_bnd2[col, row] = o_bnd2[int(col/2), int(row/2)]
-
-pwr = 1
-pwr2 = 3
-
-bn1_f = ndimage.gaussian_filter(n_bnd1, pwr)
-f_bn1_f = ndimage.gaussian_filter(bn1_f, pwr2)
-
-plt.subplot(121)
-plt.imshow(bn1_f)
-plt.title('bn1_f')
-plt.subplot(122)
-plt.imshow(f_bn1_f)
-
-
-
-alpha = 0
-shrp_bn1 = bn1_f + alpha * (bn1_f - f_bn1_f)
-
-plt.subplot(221)
-plt.imshow(n_bnd1)
-plt.title('org')
-plt.subplot(222)
-plt.imshow(bn1_f)
-plt.title('blur')
-plt.subplot(223)
-plt.imshow(shrp_bn1)
-plt.title('sharp')
-plt.subplot(224)
-plt.imshow(o_bnd1)
-plt.title('old')
-
-
-bn2_f = ndimage.gaussian_filter(n_bnd2, pwr)
-f_bn2_f = ndimage.gaussian_filter(bn2_f, pwr2)
-
-alpha = 30
-shrp_bn2 = bn2_f + alpha * (bn2_f - f_bn2_f)
-
-plt.subplot(234)
-plt.imshow(n_bnd2[50:100, 55:80])
-plt.title('org')
-plt.subplot(235)
-plt.imshow(bn2_f[50:100, 55:80])
-plt.title('blur')
-plt.subplot(236)
-plt.imshow(shrp_bn2[50:100, 55:80])
-plt.title('sharp')
-
-plt.tight_layout()
-plt.show()
-"""
-
-
-"""

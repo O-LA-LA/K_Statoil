@@ -1,9 +1,9 @@
 
-from keras.layers import merge, Input
-from keras.models import Model
-from keras.models import Sequential
-from keras.layers import Dense, Dropout, Flatten
+from keras.layers import Merge, Input, Concatenate
+from keras.models import Sequential, Model
 from keras.layers import Conv2D, MaxPooling2D
+import sys
+import time
 import numpy as np
 import pandas as pd
 from scipy import ndimage
@@ -12,14 +12,39 @@ from keras.layers import Dense, Dropout, Flatten
 from keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 from keras import backend as K
 from keras.optimizers import Adam, RMSprop
-from keras.applications import mobilenet, resnet50
-import os
-import imutils
 import cv2 as cv
 
 ############################################################
 ############### All Functions ##############################
 ############################################################
+
+def replace_cmd_line(output):
+    """Replace the last command line output with the given output."""
+    #sys.stdout.write(output + '\r')
+    #sys.stdout.flush()
+    #sys.stdout.write('\r')
+    #sys.stdout.flush()
+    print(output, end='')
+    print('\r', end='')
+
+def my_tr_tst_split (fet1, fet2, tar, split=0.2, random_state=1):
+    # confirm data length matches
+    assert len(fet1) == len(tar) and len(fet2) == len(fet1)
+    end = int(len(fet1)*split)
+
+    # shuffel the arrays to evenly distribute the data
+    fet1, fet2, tar = unison_shuffled_copies(fet1, fet2, tar, seed=random_state)
+
+    fet1_train = fet1[end:]
+    fet1_val = fet1[:end]
+
+    fet2_train = fet2[end:]
+    fet2_val = fet2[:end]
+
+    tar_train = tar[end:]
+    tar_val = tar[:end]
+
+    return fet1_train, fet1_val, fet2_train, fet2_val, tar_train, tar_val
 
 def rotate_img(img, rotate):
     ver_img = [img]
@@ -29,11 +54,11 @@ def rotate_img(img, rotate):
         ver_img.extend([cv.warpAffine(img, M, (cols, rows))])
     return ver_img
 
-
-def unison_shuffled_copies(a, b):
-    assert len(a) == len(b)
+def unison_shuffled_copies(a, b, c, seed):
+    assert len(a) == len(b) and len(c) == len(b)
+    np.random.seed(seed)
     p = np.random.permutation(len(a))
-    return a[p], b[p]
+    return a[p], b[p], c[p]
 
 def enlarge (img, order=2):
     lng, wdth = list(img.shape)
@@ -124,7 +149,8 @@ def prep_data(df, order):
     max_inc = df.inc_angle.max()
     min_inc = df.inc_angle.min()
     inc_ang = np.zeros((int(75*order), int(75*order)))
-    X = []
+    X1 = []
+    X2 = []
     for i in df.index:
         print(i)
         # raw images
@@ -154,22 +180,28 @@ def prep_data(df, order):
         inc_ang[:] = ((df.at[i, 'inc_angle'] - avg_inc - min_inc) / (max_inc - min_inc))
 
         # 5 layers containing enh and normalized raw with NO duplication of the data
-        X.append(np.dstack((rw1, c_bnd1, inc_ang)))
+        X1.append(np.dstack((rw1, c_bnd1)))
+        X2.append(np.dstack((rw2, c_bnd2)))
 
-    return np.array(X)
+    return np.array(X1), np.array(X2)
 
-def dup_data(fet, tar, num = 4):
+def dup_data(fet1, fet2, tar, num = 4):
 
     # confirm data length matches
-    assert len(fet) == len(tar)
-    X = []
+    assert len(fet1) == len(tar) and len(fet2) == len(fet1)
+    x1 = []
+    x2 = []
     y = []
-    for i in range(len(fet)):
-        print('duplicated image #', i)
-        # rotate images
-        X.extend(list(rotate_img(fet[i], rotate= num)))
-        y.extend([tar[i]] * num)
-    return np.array(X), np.array(y)
+    if num == 1:
+        return fet1, fet2, tar
+    else:
+        for i in range(len(fet1)):
+            print('duplicated image #', i)
+            # rotate images
+            x1.extend(list(rotate_img(fet1[i], rotate=num)))
+            x2.extend(list(rotate_img(fet2[i], rotate=num)))
+            y.extend([tar[i]] * num)
+        return np.array(x1), np.array(x2), np.array(y)
 
 def bnd_Model():
     # Build keras model
@@ -212,76 +244,151 @@ def bnd_Model():
 
     return model
 
+def getmodel():
 
-############################################################
-########### Import Training data ###########################
-############################################################
+    f_model = Sequential()
+    #inp_bnd1 = Input(shape=input_shape)
+    bnd1_model = bnd_Model()
 
-# load the training data
-train = pd.read_json('/Users/ohad/Google_Drive/DS_projects/K_Statoil/Train/train.json')
-train['inc_angle'] = pd.to_numeric(train['inc_angle'], errors='coerce')
+    #inp_bnd2 = Input(shape=input_shape)
+    bnd2_model = bnd_Model()
 
-# option 1 fill the images with nan for inc_angle with mean of angles
-train['inc_angle'] = train['inc_angle'].fillna(train['inc_angle'].mean())
-#test['inc_angle'] = test['inc_angle'].fillna(test['inc_angle'].mean())
+    #merged = Concatenate([bnd1_model, bnd2_model])
+    #f_model = Model(inputs=[inp_bnd1, inp_bnd2], outputs=merged)
+    f_model.add(Merge([bnd1_model, bnd2_model], mode='concat'))
 
-# option 2 drop images with nan
-#train = train.dropna(axis=0, how='any')
+    f_model.add(Dense(512, activation = 'relu'))
+    f_model.add(Dense(1, activation='sigmoid'))
 
-print('train data has been read')
+    optimizer = Adam(lr=0.003, beta_1=0.99, beta_2=0.99, epsilon=1e-08, decay=0.01)
+    # optimizer = Adam(lr=0.001, decay=0.0)
+    # optimizer = keras.optimizers.SGD(lr=0.03, momentum=0.03, decay=0.01, nesterov=True)
+    f_model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
 
-############################################################
-########### Preparing data for model #######################
-############################################################
+    return f_model
+
+def import_training_data():
+    # load the training data
+    train = pd.read_json('/Users/ohad/Google_Drive/DS_projects/K_Statoil/Train/train.json')
+    train['inc_angle'] = pd.to_numeric(train['inc_angle'], errors='coerce')
+
+    # option 1 fill the images with nan for inc_angle with mean of angles
+    train['inc_angle'] = train['inc_angle'].fillna(train['inc_angle'].mean())
+    #test['inc_angle'] = test['inc_angle'].fillna(test['inc_angle'].mean())
+
+    # option 2 drop images with nan
+    #train = train.dropna(axis=0, how='any')
+
+    print('train data has been read')
+
+def data_wrangling(order, flip):
+    global train, X1_tr, X2_tr, y_r, X1_dup, X2_dup, y_dup
+
+    path = '/Users/ohad/Google_Drive/DS_projects/K_Statoil/K_Statoil/data'
+
+    X1_tr, X2_tr = prep_data(train, order=order)
+    y_tr = np.array(train['is_iceberg'])
+
+    # duplicating the data by rotating 90 degree 4 times:
+    X1_dup, X2_dup, y_dup = dup_data(X1_tr, X2_tr, y_tr, num=flip)
+
+def setup_input_shape(order, layer):
+    global fet1_train, fet1_val, fet2_train, fet2_val, tar_train, tar_val, input_shape
+    # input image dimensions
+    img_rows, img_cols, layers = int(75 * order), int(75 * order), layer
+
+    # configuring the input_shape and the x, y to the tensor flow structure
+    if K.image_data_format() == 'channels_first':
+        fet1_train = fet1_train.reshape(fet1_train.shape[0], layers, img_rows, img_cols)
+        fet2_train = fet2_train.reshape(fet2_train.shape[0], layers, img_rows, img_cols)
+        fet1_val = fet1_val.reshape(fet1_val.shape[0], layers, img_rows, img_cols)
+        fet2_val = fet2_val.reshape(fet2_val.shape[0], layers, img_rows, img_cols)
+
+        input_shape = (layers, img_rows, img_cols)
+    else:
+        fet1_train = fet1_train.reshape(fet1_train.shape[0], img_rows, img_cols, layers)
+        fet2_train = fet2_train.reshape(fet2_train.shape[0], img_rows, img_cols, layers)
+        fet1_val = fet1_val.reshape(fet1_val.shape[0], img_rows, img_cols, layers)
+        fet2_val = fet2_val.reshape(fet2_val.shape[0], img_rows, img_cols, layers)
+        input_shape = (img_rows, img_cols, layers)
+
+def prep_submission():
+    test = pd.read_json('/Users/ohad/Google_Drive/DS_projects/K_Statoil/test/test.json')
+    test['inc_angle'] = pd.to_numeric(test['inc_angle'], errors='coerce')
+
+    # option2 drop images with nan
+    test = test.dropna(axis=0, how='any')
+    print('test has been read')
+
+    X1_tst, X2_tst = prep_data(test, order)
+
+    pred_test = model.predict([X1_tst, X2_tst])
+
+    submission = pd.DataFrame({'id': test["id"], 'is_iceberg': pred_test.reshape((pred_test.shape[0]))})
+
+    scr = str(score[0]).replace(".", "")[0:5]
+
+    submission.to_csv('submission_scr_{}.csv'.format(scr), index=False)
+
+def prep_submission_FLOYD():
+    test = pd.read_json('/data/Test/test.json')
+    test['inc_angle'] = pd.to_numeric(test['inc_angle'], errors='coerce')
+
+    # option2 drop images with nan
+    # test = test.dropna(axis=0, how='any')
+    print('test has been read')
+
+    X1_tst, X2_tst = prep_data(test, order)
+
+    pred_test = model.predict([X1_tst, X2_tst])
+
+    scr = str(score[0]).replace(".", "")[0:5]
+
+    submission = pd.DataFrame({'id': test["id"], 'is_iceberg': pred_test.reshape((pred_test.shape[0]))})
+
+    submission.to_csv('/output/submission_scr_{}.csv'.format(scr), index=False)
+
+
+#file_name = 'X_prep{}'.format(str(order).replace(".", ""))
+#np.save(os.path.join(path, file_name), X_tr)
+#file_name = 'y_prep{}'.format(str(order).replace(".", ""))
+#np.save(os.path.join(path, file_name), y_tr)
+
+#file_name = 'X_dup{}_ord{}_lyr{}'.format(flip, str(order).replace(".", ""), layers)
+#np.save(os.path.join(path, file_name), X_dup)
+#file_name = 'y_dup{}_ord{}_lyr{}'.format(flip, str(order).replace(".", ""), layers)
+#np.save(os.path.join(path, file_name), y_dup)
 
 # Order to enlarge our images
 order = 1
-path = '/Users/ohad/Google_Drive/DS_projects/K_Statoil/K_Statoil/data'
+# number of layer per image
+layers = 2
+# number of duplicate images
+duplicate = 2
 
-# input image dimensions
-img_rows, img_cols, layers = int(75 * order), int(75 * order), 3
+batch_size = 20
+epochs = 50
 
-X_tr = prep_data(train, order=order)
-y_tr = np.array(train['is_iceberg'])
+import_training_data()
 
-file_name = 'X_prep{}'.format(str(order).replace(".", ""))
-np.save(os.path.join(path, file_name), X_tr)
-file_name = 'y_prep{}'.format(str(order).replace(".", ""))
-np.save(os.path.join(path, file_name), y_tr)
-
-# duplicating the data by rotating 90 degree 4 times:
-flip = 2
-X_dup, y_dup = dup_data(X_tr, y_tr, num=flip)
-file_name = 'X_dup{}_ord{}_lyr{}'.format(flip, str(order).replace(".", ""), layers)
-np.save(os.path.join(path, file_name), X_dup)
-file_name = 'y_dup{}_ord{}_lyr{}'.format(flip, str(order).replace(".", ""), layers)
-np.save(os.path.join(path, file_name), y_dup)
-
-
-# shuffel the arrays to evenly distribute the data
-X, y = unison_shuffled_copies(X_dup, y_dup)
+data_wrangling(order, duplicate)
 
 # split train and validate data
-x_train, x_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42)
-
-# configuring the input_shape and the x, y to the tensor flow structure
-if K.image_data_format() == 'channels_first':
-    x_train = x_train.reshape(x_train.shape[0], layers, img_rows, img_cols)
-    x_test = x_test.reshape(x_test.shape[0], layers, img_rows, img_cols)
-    input_shape = (layers, img_rows, img_cols)
-else:
-    x_train = x_train.reshape(x_train.shape[0], img_rows, img_cols, layers)
-    x_test = x_test.reshape(x_test.shape[0], img_rows, img_cols, layers)
-    input_shape = (img_rows, img_cols, layers)
-
+fet1_train, fet1_val, fet2_train, fet2_val, tar_train, tar_val = my_tr_tst_split(X1_dup, X2_dup, y_dup,
+                                                                                 split=0.25,
+                                                                                 random_state=30)
+setup_input_shape(order, layers)
 
 # change train to float32 for better performance
-x_train = x_train.astype('float32')
-x_test = x_test.astype('float32')
+fet1_train = fet1_train.astype('float32')
+fet2_train = fet2_train.astype('float32')
 
-print('x_train shape:', x_train.shape)
-print(x_train.shape[0], 'train samples')
-print(x_test.shape[0], 'test samples')
+fet1_val = fet1_val.astype('float32')
+fet2_val = fet2_val.astype('float32')
+
+print('fet1_train shape:', fet1_train.shape, 'fet2_train shape:', fet2_train.shape)
+print(fet1_train.shape[0], 'train samples')
+print(fet1_val.shape[0], 'test samples')
 
 
 ############################################################
@@ -289,16 +396,13 @@ print(x_test.shape[0], 'test samples')
 ############################################################
 
 # Setup model parameters
-batch_size = 20
-epochs = 50
+
 earlyStopping = EarlyStopping(monitor='val_loss', patience=7, verbose=0, mode='min')
 mcp_save = ModelCheckpoint('.mdl_wts.hdf5', save_best_only=True, monitor='val_loss', mode='min')
 reduce_lr_loss = ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=7, verbose=1, epsilon=1e-4, mode='min')
 
-bnd1_model = bnd_Model()
-bnd2_model = bnd_Model()
 
-final_model = se
+model = getmodel()
 model.summary()
 
 ############################################################
@@ -306,61 +410,24 @@ model.summary()
 ############################################################
 
 
-model.fit(x_train, y_train,
+model.fit([fet1_train, fet2_train], tar_train,
           batch_size=batch_size,
           epochs=epochs,
           verbose=1,
           callbacks=[earlyStopping, mcp_save, reduce_lr_loss],
-          validation_data=(x_test, y_test))
+          validation_data=([fet1_val, fet2_val], tar_val))
 
 model.load_weights(filepath = '.mdl_wts.hdf5')
 
-score = model.evaluate(x_test, y_test, verbose=1)
+score = model.evaluate([fet1_val, fet2_val], tar_val, verbose=1)
 print('Test val loss:', score[0])
 print('Test val accuracy:', score[1])
 
+prep_submission()
 
-############################################################
-############  getting data ready for submission  ###########
-############################################################
+prep_submission_FLOYD()
 
-
-test = pd.read_json('/Users/ohad/Google_Drive/DS_projects/K_Statoil/test/test.json')
-test['inc_angle'] = pd.to_numeric(test['inc_angle'], errors='coerce')
-
-# option2 drop images with nan
-test = test.dropna(axis=0, how='any')
-print('test has been read')
-
-X_tst = prep_data_nodup(test)
-
-pred_test = model.predict(X_tst)
-
-submission = pd.DataFrame({'id': test["id"], 'is_iceberg': pred_test.reshape((pred_test.shape[0]))})
-
-scr =str(score[0]).replace(".", "")[0:5]
-
-submission.to_csv('submission_scr_{}.csv'.format(scr), index=False)
-
-
-############################################################
-############  getting data ready for submission  ###########
-############################################################
-
-
-test = pd.read_json('/Users/ohad/Google_Drive/DS_projects/K_Statoil/test/test.json')
-test['inc_angle'] = pd.to_numeric(test['inc_angle'], errors='coerce')
-
-# option2 drop images with nan
-#test = test.dropna(axis=0, how='any')
-print('test has been read')
-
-X_tst = prep_data(test, order)
-
-pred_test = cst_mb_model.predict(X_tst)
-
-submission = pd.DataFrame({'id': test["id"], 'is_iceberg': pred_test.reshape((pred_test.shape[0]))})
-
-scr =str(score[0]).replace(".", "")[0:5]
-
-submission.to_csv('submission_scr_{}.csv'.format(scr), index=False)
+for i in range(100):
+    output = '{} of 100'.format(i)
+    replace_cmd_line(output=output)
+    time.sleep(0.05)

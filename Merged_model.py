@@ -205,9 +205,6 @@ def bnd_Model():
     model.add(Dense(512, activation='relu'))
     model.add(Dropout(0.2))
 
-    # Output
-    model.add(Dense(1, activation="sigmoid"))
-
     optimizer = Adam(lr= 0.002, beta_1=0.99, beta_2=0.999, epsilon=1e-08, decay=0.01)
     #optimizer = Adam(lr=0.001, decay=0.0)
     #optimizer = keras.optimizers.SGD(lr=0.03, momentum=0.03, decay=0.01, nesterov=True)
